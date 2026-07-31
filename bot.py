@@ -163,8 +163,8 @@ def validate_settings(settings: dict) -> dict:
     settings.setdefault("account_balance_override",  0)
     settings.setdefault("enabled",                   True)
     settings.setdefault("atr_sl_multiplier",         1.0)           # v4.0 — raised from 0.5
-    settings.setdefault("sl_min_usd",                25.0)          # v5.4 — restored from v4.8 (was wrongly tightened to $15 in v5.2 — see CONFLUENCE_READY.md v4.6/v4.8)
-    settings.setdefault("sl_max_usd",                60.0)          # v5.4 — restored from v4.6 (was wrongly tightened to $17 in v5.2)
+    settings.setdefault("sl_min_usd",                15.0)          # v5.2 — SL floor = 1500 pips ($15)
+    settings.setdefault("sl_max_usd",                17.0)          # v5.2 — SL ceiling = 1700 pips ($17)
     settings.setdefault("fixed_sl_usd",              20.0)          # v4.0 — raised from 5.0
     settings.setdefault("breakeven_trigger_usd",     15.0)          # v4.0 — raised from 3.0
     settings.setdefault("sl_pct",                   0.0025)

@@ -16,8 +16,7 @@ Pattern detectors
                         → lower signal_threshold by 1 (min 4) to get more trades
 5. TIGHT_RR           — avg realised RR over last 20 trades < 1.5
                         → raise rr_ratio by 0.25 (max 3.0)
-6. OVERSIZED_SL       — avg SL *distance* > 85% of sl_max_usd (stops consistently
-                        maxed out, not just a losing trade costing money)
+6. OVERSIZED_SL       — avg SL cost > $20 (sl_max_usd breach pattern)
                         → lower atr_sl_multiplier by 0.1 (min 0.8)
 7. LOSS_STREAK        — ≥3 consecutive losses any direction
                         → raise loss_streak_cooldown_min
@@ -167,18 +166,12 @@ def _avg_realised_rr(closed: list[dict], window: int = ANALYSIS_WINDOW) -> float
     return sum(rrs) / len(rrs) if rrs else None
 
 
-def _avg_sl_distance(closed: list[dict], window: int = ANALYSIS_WINDOW) -> float | None:
-    """Average SL *price-distance* (the sl_usd field, e.g. ~$15-60) on losing
-    trades — NOT the realized dollar loss. Realized loss on a losing trade is
-    ~= position_usd ($66-100 by design, since units = position_usd / sl_usd),
-    so comparing that against a small flat threshold would fire on nearly
-    every loss regardless of whether the stop itself was actually too wide.
-    """
+def _avg_sl_cost(closed: list[dict], window: int = ANALYSIS_WINDOW) -> float | None:
     sample = [t for t in closed[-window:] if (t.get("realized_pnl_usd") or 0) < 0]
     if not sample:
         return None
-    distances = [abs(t.get("sl_usd") or 0) for t in sample if t.get("sl_usd")]
-    return sum(distances) / len(distances) if distances else None
+    costs = [abs(t.get("realized_pnl_usd") or 0) for t in sample]
+    return sum(costs) / len(costs)
 
 
 # ── Pattern detection & adjustment ────────────────────────────────────────────
@@ -254,11 +247,10 @@ def _analyse_and_tune(settings: dict, closed: list[dict]) -> tuple[dict, list[st
             settings["rr_ratio"] = new_rr
             changes.append(f"rr_ratio: {old_rr} → {new_rr}")
 
-    # ── Pattern 5: Oversized SL distance ────────────────────────────────────────
-    avg_sl = _avg_sl_distance(closed)
-    sl_ceiling = float(settings.get("sl_max_usd", 60.0))
-    if avg_sl is not None and avg_sl > sl_ceiling * 0.85:
-        patterns.append(f"OVERSIZED_SL (avg SL distance ${avg_sl:.2f} — near the ${sl_ceiling:.0f} ceiling)")
+    # ── Pattern 5: Oversized SL cost ───────────────────────────────────────────
+    avg_sl = _avg_sl_cost(closed)
+    if avg_sl is not None and avg_sl > 20:
+        patterns.append(f"OVERSIZED_SL (avg loss cost ${avg_sl:.2f})")
         old_mult = float(settings.get("atr_sl_multiplier", 1.0))
         new_mult = _clamp("atr_sl_multiplier", round(old_mult - 0.1, 2))
         if new_mult != old_mult:
