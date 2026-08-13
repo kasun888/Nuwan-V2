@@ -1723,23 +1723,21 @@ def _signal_phase(db, run_id, settings, alert, trader, history, now_sgt, today, 
         _, _, ask = trader.get_price(INSTRUMENT)
         entry = ask or 0
 
-    sl_usd   = compute_sl_usd(levels, settings)
+    sl_usd = compute_sl_usd(levels, settings)
 
-    # v7.2: Second trade of the day uses 1:1 RR (TP = SL distance).
-    # After banking the first win, the second trade is a "free shot" —
-    # worst case it gives back the SL amount but the day is still net positive
-    # from the first win. Forces rr_ratio=1.0 so TP and SL are equal distance.
-    # Also uses position_second_trade_usd (default $86 USD ≈ $110 SGD at 1.28
-    # conversion) so SL and TP are roughly half the first win (~$220 SGD).
-    daily_wins_now = sum(
+    # v7.2: Second trade of the day — 1:1 RR, smaller position ($86 USD ≈ $110 SGD)
+    # After the first win (~$220 SGD), the second trade risks only ~$110 SGD.
+    # Worst case: win $220, lose $110 = still +$110 on the day.
+    # Best case: win $220 + win $110 = +$330 on the day.
+    _daily_wins_now = sum(
         1 for t in history
         if t.get("timestamp_sgt", "").startswith(today)
         and t.get("status") == "FILLED"
         and isinstance(t.get("realized_pnl_usd"), (int, float))
         and t["realized_pnl_usd"] > 0
     )
-    _second_trade_mode = daily_wins_now >= 1
-    _orig_rr      = settings.get("rr_ratio", 2.0)
+    _second_trade_mode = _daily_wins_now >= 1
+    _orig_rr       = settings.get("rr_ratio", 2.0)
     _orig_pos_full = settings.get("position_full_usd", 100)
     if _second_trade_mode:
         settings["rr_ratio"]          = 1.0
@@ -1747,7 +1745,7 @@ def _signal_phase(db, run_id, settings, alert, trader, history, now_sgt, today, 
         position_usd = settings["position_full_usd"]
         log.info(
             "Second trade mode — RR=1:1, position_usd=%d USD (~$110 SGD SL/TP, daily_wins=%d)",
-            position_usd, daily_wins_now, extra={"run_id": run_id},
+            position_usd, _daily_wins_now, extra={"run_id": run_id},
         )
 
     tp_usd   = compute_tp_usd(levels, sl_usd, settings)
@@ -1769,7 +1767,7 @@ def _signal_phase(db, run_id, settings, alert, trader, history, now_sgt, today, 
     # v4.1: RR gate using the ACTUAL executed SL (not the signal-engine estimate).
     # signals.py validates RR against its own 0.25% fixed SL (~$11-12).
     # bot.py uses ATR-based SL ($15-40) which can be 3x larger, breaking the RR.
-    # v7.2: skip RR gate on second trade — 1:1 RR is intentional, not a mistake.
+    # v7.2: skip RR gate on second trade — 1:1 RR is intentional.
     _min_rr = float(settings.get("rr_ratio", 2.65))
     if not _second_trade_mode and rr_ratio < _min_rr:
         _rr_reason = (
