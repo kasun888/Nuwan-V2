@@ -152,6 +152,12 @@ def validate_settings(settings: dict) -> dict:
     settings.setdefault("h4_trend_filter_enabled",   True)          # v5.3 — H4 macro trend filter
     settings.setdefault("h4_ema_period",             21)            # v5.3 — H4 EMA period
     settings.setdefault("h4_ema_buffer_pct",         0.15)          # v5.3 — buffer zone ±% around H4 EMA (prevents flip-flop)
+    settings.setdefault("h1_adx_filter_enabled",     True)          # v5.7 — H1 ADX trend-strength gate (blocks chop in both directions)
+    settings.setdefault("h1_adx_period",             14)            # v5.7 — ADX lookback period
+    settings.setdefault("h1_adx_min",                20.0)          # v5.7 — below this ADX, market is ranging — no trade
+    settings.setdefault("h4_slope_filter_enabled",   True)          # v5.7 — require H4 EMA itself to be sloping with the trend
+    settings.setdefault("h4_slope_lookback",         6)             # v5.7 — candles back to measure H4 EMA slope over
+    settings.setdefault("h4_slope_min_pct",          0.05)          # v5.7 — minimum EMA movement over lookback to count as "sloping"
     settings.setdefault("require_candle_close",      True)          # v5.1 — wait for M15 candle close
     settings.setdefault("sl_direction_cooldown_min", 60)            # v5.1 — cooldown after direction guard fires
     settings.setdefault("post_win_candle_block",     True)          # v5.6 — block new entries for post_win_cooldown_hours after a win

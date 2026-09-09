@@ -1,5 +1,5 @@
 {
-  "bot_name": "CPR Gold Bot v5.3",
+  "bot_name": "CPR Gold Bot v5.7",
   "demo_mode": true,
   "trade_gold": true,
   "signal_threshold": 4,
@@ -71,7 +71,7 @@
   "consecutive_sl_guard": 2,
   "breakeven_enabled": false,
   "min_reentry_wait_min": 10,
-  "version": "5.3",
+  "version": "5.7",
   "instrument": "XAU_USD",
   "instrument_display": "XAU/USD",
   "timeframe": "M15",
@@ -99,6 +99,12 @@
   "post_win_cooldown_hours": 4,
   "ai_reasoning": true,
   "h4_ema_buffer_pct": 0.15,
+  "h1_adx_filter_enabled": true,
+  "h1_adx_period": 14,
+  "h1_adx_min": 20.0,
+  "h4_slope_filter_enabled": true,
+  "h4_slope_lookback": 6,
+  "h4_slope_min_pct": 0.05,
   "ai_scale_after_loss": false,
   "position_second_trade_usd": 86
 }

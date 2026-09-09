@@ -172,7 +172,9 @@ class SignalEngine:
         _h1_data_failed = False
         if _h1_filter:
             _h1_period = int((settings or {}).get("h1_ema_period", 21))
-            h1_closes, _, _ = self._fetch_candles(instrument, "H1", _h1_period + 5)
+            _h1_adx_period = int((settings or {}).get("h1_adx_period", 14))
+            _h1_fetch_count = max(_h1_period + 5, _h1_adx_period * 3)
+            h1_closes, h1_highs, h1_lows = self._fetch_candles(instrument, "H1", _h1_fetch_count)
             if len(h1_closes) >= _h1_period:
                 _h1_ema = sum(h1_closes[-_h1_period:]) / _h1_period
                 _h1_price = h1_closes[-1]
@@ -189,6 +191,29 @@ class SignalEngine:
                 )
         levels["h1_trend_bullish"] = h1_trend_bullish
 
+        # ── H1 ADX trend-strength filter (v5.7) ──────────────────────────
+        # The H1/H4 EMA checks above only ask "which side of the EMA is
+        # price on" — a ranging market grinding sideways just above/below
+        # the EMA still reads as a "trend". ADX measures whether a trend
+        # actually has directional force behind it, independent of which
+        # way price is leaning. Low ADX = chop → block regardless of
+        # BUY/SELL, unlike the EMA filters which only block the wrong side.
+        h1_adx = None
+        _adx_filter = bool((settings or {}).get("h1_adx_filter_enabled", True))
+        _adx_data_failed = False
+        if _adx_filter and _h1_filter:
+            if _h1_data_failed:
+                _adx_data_failed = True
+            else:
+                h1_adx = self._adx(h1_highs, h1_lows, h1_closes, _h1_adx_period)
+                if h1_adx is None:
+                    _adx_data_failed = True
+                    log.warning(
+                        "H1 ADX filter: insufficient candle data (%d) for ADX(%d) — blocking trade (fail-safe)",
+                        len(h1_closes), _h1_adx_period,
+                    )
+        levels["h1_adx"] = round(h1_adx, 2) if h1_adx is not None else None
+
         # ── H4 trend filter (v5.3 FIXED) ─────────────────────────────────
         # Hard block on macro H4 direction — prevents shorting a bull trend
         # or buying a bear trend even when M15/CPR gives a counter signal.
@@ -199,10 +224,15 @@ class SignalEngine:
         h4_trend_bullish = None   # None = filter disabled or data unavailable
         _h4_filter = bool((settings or {}).get("h4_trend_filter_enabled", True))
         _h4_data_failed = False
+        _h4_slope_filter = bool((settings or {}).get("h4_slope_filter_enabled", True))
+        _h4_slope_lookback = int((settings or {}).get("h4_slope_lookback", 6))
+        _h4_slope_min_pct = float((settings or {}).get("h4_slope_min_pct", 0.05))
+        h4_ema_rising = None   # None = not computed / not applicable
         if _h4_filter:
             _h4_period = int((settings or {}).get("h4_ema_period", 21))
             _h4_buffer_pct = float((settings or {}).get("h4_ema_buffer_pct", 0.15))
-            h4_closes, _, _ = self._fetch_candles(instrument, "H4", _h4_period + 5)
+            _h4_fetch_count = _h4_period + 5 + (_h4_slope_lookback if _h4_slope_filter else 0)
+            h4_closes, _, _ = self._fetch_candles(instrument, "H4", _h4_fetch_count)
             if len(h4_closes) >= _h4_period:
                 _h4_ema = sum(h4_closes[-_h4_period:]) / _h4_period
                 _h4_price = h4_closes[-1]
@@ -219,6 +249,24 @@ class SignalEngine:
                     "BULLISH" if h4_trend_bullish is True else
                     ("BEARISH" if h4_trend_bullish is False else "NEUTRAL/buffer"),
                 )
+                # v5.7 — EMA slope check: a flat EMA with price loitering just
+                # past the buffer still isn't a real trend. Require the EMA
+                # itself to have moved >= h4_slope_min_pct in the trend
+                # direction over the last h4_slope_lookback candles.
+                if _h4_slope_filter and h4_trend_bullish is not None and len(h4_closes) >= _h4_period + _h4_slope_lookback:
+                    _h4_ema_prior = sum(h4_closes[-_h4_period - _h4_slope_lookback:-_h4_slope_lookback]) / _h4_period
+                    _h4_slope_pct = (_h4_ema - _h4_ema_prior) / _h4_ema_prior * 100
+                    h4_ema_rising = _h4_slope_pct > _h4_slope_min_pct
+                    h4_ema_falling = _h4_slope_pct < -_h4_slope_min_pct
+                    log.info(
+                        "H4 EMA slope | EMA%d now=%.2f (%d bars ago)=%.2f slope=%.3f%% min=%.3f%%",
+                        _h4_period, _h4_ema, _h4_slope_lookback, _h4_ema_prior, _h4_slope_pct, _h4_slope_min_pct,
+                    )
+                    levels["h4_ema_slope_pct"] = round(_h4_slope_pct, 3)
+                    if h4_trend_bullish and not h4_ema_rising:
+                        h4_trend_bullish = None  # price above EMA but EMA itself is flat/falling — not a real uptrend
+                    elif h4_trend_bullish is False and not h4_ema_falling:
+                        h4_trend_bullish = None  # price below EMA but EMA itself is flat/rising — not a real downtrend
             else:
                 # v5.6 FAIL-SAFE: candle data empty — mark failed, block below.
                 _h4_data_failed = True
@@ -290,6 +338,26 @@ class SignalEngine:
                 f"❌ Price {current_close:.2f} inside CPR (TC={tc:.2f} BC={bc:.2f}) — no signal"
             )
             return 0, "NONE", " | ".join(reasons), levels, 0
+
+        # ── 1a2. H1 ADX trend-strength gate (v5.7) ───────────────────────
+        # Blocks trades in BOTH directions when the market isn't actually
+        # trending (low ADX = chop), regardless of which side of the EMA
+        # price happens to be sitting on. This is separate from the H1/H4
+        # EMA checks below, which only block the *wrong-direction* trade.
+        if _adx_filter and _h1_filter:
+            _adx_min = float((settings or {}).get("h1_adx_min", 20.0))
+            if _adx_data_failed:
+                reasons.append("❌ H1 ADX data unavailable — trade blocked (fail-safe)")
+                log.warning("H1 ADX filter: blocking %s — candle data failed to load", direction)
+                return 0, "NONE", " | ".join(reasons), levels, 0
+            if h1_adx is not None and h1_adx < _adx_min:
+                reasons.append(
+                    f"❌ H1 ADX {h1_adx:.1f} < {_adx_min:.1f} — market not trending, trade blocked"
+                )
+                log.info("ADX filter blocked %s — ADX %.1f below %.1f threshold", direction, h1_adx, _adx_min)
+                return 0, "NONE", " | ".join(reasons), levels, 0
+            elif h1_adx is not None:
+                reasons.append(f"✅ H1 ADX {h1_adx:.1f} ≥ {_adx_min:.1f} — trend has strength")
 
         # ── 1b. H1 trend filter (v5.0 / v5.6 fail-safe) ─────────────────
         # Block trades that go against the H1 EMA trend.
@@ -559,3 +627,59 @@ class SignalEngine:
         for tr in trs[period:]:
             atr = (atr * (period - 1) + tr) / period
         return atr
+
+    def _adx(self, highs: list, lows: list, closes: list, period: int = 14) -> float | None:
+        """Return the most recent Wilder ADX value, or None if insufficient data.
+
+        ADX measures trend *strength* independent of direction — it's a check
+        the H1/H4 EMA-side filters don't do on their own. A market can sit
+        clearly above/below an EMA while still just chopping sideways; ADX
+        catches that. Standard reading: <20 = no trend/ranging, >=20 = trending.
+        """
+        n = len(closes)
+        # Need enough bars for the initial period-sum plus Wilder smoothing
+        # to converge on a stable ADX value.
+        if n < period * 2 + 1 or len(highs) < n or len(lows) < n:
+            return None
+
+        trs, plus_dms, minus_dms = [], [], []
+        for i in range(1, n):
+            up_move = highs[i] - highs[i - 1]
+            down_move = lows[i - 1] - lows[i]
+            plus_dm = up_move if (up_move > down_move and up_move > 0) else 0.0
+            minus_dm = down_move if (down_move > up_move and down_move > 0) else 0.0
+            tr = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
+            trs.append(tr)
+            plus_dms.append(plus_dm)
+            minus_dms.append(minus_dm)
+
+        def wilder_smooth(values):
+            smoothed = sum(values[:period])
+            out = [smoothed]
+            for v in values[period:]:
+                smoothed = smoothed - (smoothed / period) + v
+                out.append(smoothed)
+            return out
+
+        tr_s = wilder_smooth(trs)
+        plus_dm_s = wilder_smooth(plus_dms)
+        minus_dm_s = wilder_smooth(minus_dms)
+
+        dxs = []
+        for tr_v, pdm_v, mdm_v in zip(tr_s, plus_dm_s, minus_dm_s):
+            if tr_v == 0:
+                dxs.append(0.0)
+                continue
+            plus_di = 100 * (pdm_v / tr_v)
+            minus_di = 100 * (mdm_v / tr_v)
+            di_sum = plus_di + minus_di
+            dx = 100 * abs(plus_di - minus_di) / di_sum if di_sum > 0 else 0.0
+            dxs.append(dx)
+
+        if len(dxs) < period:
+            return None
+
+        adx = sum(dxs[:period]) / period
+        for dx in dxs[period:]:
+            adx = (adx * (period - 1) + dx) / period
+        return adx
